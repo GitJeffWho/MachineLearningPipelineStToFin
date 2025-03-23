@@ -23,7 +23,58 @@ import joblib
 # for linear regression statistics, if you want it
 import statsmodels.api as sm
 from Numeric_Check import datetime_normalization
-from catboost import CatBoostRegressor, Pool
+# Working on implementation of catboost
+# from catboost import CatBoostRegressor, Pool
+
+
+# MLPipeline - A Machine Learning Pipeline tool implementation
+# Copyright (C) 2025 Jeffrey Hu
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+"""
+This is an implementation of an end-to-end regression machine learning pipeline (No classification)
+
+To use, look at the inputs to the example MLP implementation here
+
+def shallowMachineLearningPipeline(df, test_df, ordinal_columns, categorical_columns,
+                                   numerical_columns, target_col, id_columns=None,
+                                   datetime_columns=None, output_dir=None):
+
+Specify the column types as listed above, with ordinal/categoricals columns in a categorical/object dtype
+and numericals as a numerical dtype (like int, float). Target_col must be
+ID_Columns are not used for training, but reattached to predictions in the test set (not used at all for training)
+
+Missings in numerical, dataset differences, and column creation from OHE/Missing indication all handled internally
+
+Only takes in Pandas Dataframes, for best practices, presplit a dataframe
+a test_df and a training df (list as just df). Without a test_df, predictions and evaluation metrics
+will not be produced. The training dataframe will be split into training/validation sets for CV, if
+this is not wanted behavior, PredefinedSplits are introduced in a later build.
+PredefinedSplits cannot be used for Optuna (from what I recall)
+
+A Numeric_Check file is also referenced (In this case, just forces for datetime normalization on datetime variables)
+
+No proper inbuilt logging or error checking currently built in.
+
+For loading test models, please use the proper FittedEncoders, outputted in a joblib file
+    Stores the training numerical missing input statistic/strategy (like median imputation, etc.)
+    Training Scalers, known/unknown columns, column names post numerical filling and OHE column creation
+    and more...
+"""
+
 
 # Thread Limit Control
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -1530,151 +1581,7 @@ def catboostPipe():
 def catboostTuner(df, target_col, categorical_features=None,
                   output_dir=None, n_jobs=3, n_trials=100, timeout=None,
                   cv=5, random_state=42):
-    """
-    Tune CatBoost hyperparameters using Optuna.
-
-    Args:
-        df: pandas DataFrame containing features and target
-        target_col: string, name of the target column
-        categorical_features: list of categorical column names
-        output_dir: string, directory to save model artifacts
-        n_jobs: int, number of parallel jobs
-        n_trials: int, number of optimization trials
-        timeout: int, timeout in seconds for optimization
-        cv: int, number of cross-validation folds
-        random_state: int, random state for reproducibility
-
-    Returns:
-        dict w/ best parameters and best score
-            for concatenation with the rest of the model outputs
-    """
-
-    # Prepare data
-    # X = df.drop(columns=[target_col])
-    # y = df[target_col]
-    #
-    # splitter = KFold(n_splits=cv, shuffle=True, random_state=random_state)
-    #
-    # # Initialize lists to store trial information
-    # trials_list = []
-    #
-    # def objective(trial):
-    #     # Common parameters
-    #     param = {
-    #         'iterations': trial.suggest_int('iterations', 100, 1000),
-    #         'learning_rate': trial.suggest_float('learning_rate', 1e-3, 0.1, log=True),
-    #         'depth': trial.suggest_int('depth', 4, 10),
-    #         'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-8, 10.0, log=True),
-    #         "bootstrap_type": trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli", "MVS"]),
-    #         'random_strength': trial.suggest_float('random_strength', 1e-8, 10.0, log=True),
-    #         'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 10.0),
-    #         'od_wait': trial.suggest_int('od_wait', 10, 50),
-    #         'leaf_estimation_iterations': trial.suggest_int('leaf_estimation_iterations', 1, 10),
-    #         "od_type": "Iter",
-    #         'random_state': random_state,
-    #         'verbose': False
-    #     }
-    #
-    #     # Handle different bootstrap types
-    #     if param["bootstrap_type"] == "Bernoulli":
-    #         param["subsample"] = trial.suggest_float("subsample", 0.1, 1.0)
-    #
-    #     # Initialize scores list
-    #     fold_scores = []
-    #
-    #     # Perform cross-validation with Pool objects
-    #     for fold_idx, (train_idx, val_idx) in enumerate(splitter.split(X, y)):
-    #         X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-    #         y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-    #
-    #         # Create Pool objects
-    #         train_pool = Pool(
-    #             data=X_train,
-    #             label=y_train,
-    #             cat_features=categorical_features
-    #         )
-    #         val_pool = Pool(
-    #             data=X_val,
-    #             label=y_val,
-    #             cat_features=categorical_features
-    #         )
-    #
-    #         # Initialize and train model
-    #         model = CatBoostRegressor(**param)
-    #         eval_metric = 'RMSE'
-    #
-    #         # Fit model
-    #         model.fit(
-    #             train_pool,
-    #             eval_set=val_pool,
-    #             use_best_model=True,
-    #             early_stopping_rounds=50,
-    #             verbose=False
-    #         )
-    #
-    #         # Get validation score
-    #         score = model.get_best_score()['validation'][eval_metric]
-    #         score = -score  # Negative for minimization
-    #         fold_scores.append(score)
-    #
-    #         trials_list.append({
-    #             'number': trial.number,
-    #             'value': score,
-    #             'params': trial.params,
-    #             'state': trial.state,
-    #         })
-    #
-    #     # Return mean score
-    #     return np.mean(fold_scores)
-    #
-    # # Create study
-    # study = optuna.create_study(direction='minimize')
-    #
-    # # Optimize
-    # study.optimize(
-    #     objective,
-    #     n_trials=n_trials,
-    #     timeout=timeout,
-    #     # Setting n_jobs here, CatBoost (like LightGBM) has internal parallelization so be careful running more than 2
-    #     n_jobs=n_jobs
-    # )
-    #
-    # trials_df = pd.DataFrame(trials_list)
-    #
-    # # Get best parameters
-    # best_params = study.best_params
-    # best_score = -study.best_value  # Convert back to positive score
-    #
-    # # Save study if output directory is provided
-    # if output_dir:
-    #     os.makedirs(output_dir, exist_ok=True)
-    #     study.trials_dataframe().to_csv(
-    #         os.path.join(output_dir, 'placeholder.csv'),
-    #         index=False
-    #     )
-    #
-    # # Train final model with best parameters
-    # # Create final Pool object with all data
-    # final_pool = Pool(
-    #     data=X,
-    #     label=y,
-    #     cat_features=categorical_features
-    # )
-    #
-    # final_model = CatBoostRegressor(**best_params)
-    #
-    # best_models_df = pd.DataFrame([{
-    #     'model': 'catboost',
-    #     'best_score': study.best_value,
-    #     'best_params': best_params,
-    #     # 'val_r2': val_r2
-    # }])
-    #
-    # return {
-    #     'best_models': best_models_df,
-    #     'cv_results': {'cat': trials_df},
-    #     'best_estimators': {'cat': final_model}
-    # }
+    pass
 
 
 def combine_pipeline_results(sklearn_results, lightgbm_results, catboost_results=None):
@@ -1860,30 +1767,6 @@ def shallowMachineLearningPipeline(df, test_df, ordinal_columns, categorical_col
             print(pipeline_results['best_estimators'].items())
             model_path = os.path.join(output_dir, f'{model_name}_pipeline')
             joblib.dump(pipeline, f"{model_path}.joblib")
-
-
-            # Original code that still needs to be fixed below
-            # Originally, I wanted to create their native files so the XGBR file could be
-            # used across different applications, but we're saving the fitted_encoders in a joblib python native file
-            # so that entire section needs to be redone anyways, for cross-application use
-            # named_steps is the incorrect pipeline call though.
-            # DONT USE BELOW, DOES NOT WORK
-
-
-            # print(f'{model_name}')
-            # model_path = os.path.join(output_dir, f'{model_name}_pipeline')
-            #
-            # if 'cat' == model_name.lower():
-            #     model = pipeline.named_steps[f'{model_name}']
-            #     model.save_model(f"{model_path}.cbm")
-            # elif 'xgbr' == model_name.lower():
-            #     model = pipeline.named_steps[f'{model_name}']
-            #     model.save_model(f"{model_path}.model")
-            # elif 'lgbm' == model_name.lower():
-            #     model = pipeline.named_steps[f'{model_name}']
-            #     model.booster_.save_model(f"{model_path}.txt")
-            # else:
-            #     joblib.dump(pipeline, f"{model_path}.joblib")
 
 
     # Make predictions using appropriate preprocessed test data
