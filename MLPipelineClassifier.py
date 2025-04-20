@@ -4,16 +4,18 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
-from sklearn.model_selection import PredefinedSplit, GridSearchCV, train_test_split, cross_val_score, KFold
+from sklearn.model_selection import (PredefinedSplit, GridSearchCV, train_test_split, cross_val_score,
+                                     KFold, StratifiedKFold)
 import lightgbm as lgb
 from sklearn.base import BaseEstimator
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import SGDRegressor, LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.neural_network import MLPRegressor
-from xgboost import XGBRegressor
+from sklearn.linear_model import SGDClassifier, LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+from xgboost import XGBClassifier
 # import xgboost as xgb
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import (roc_auc_score, accuracy_score, precision_score, recall_score, f1_score,
+                             confusion_matrix, log_loss)
 from sklearn.preprocessing import StandardScaler
 from joblib import parallel_backend
 import optuna
@@ -22,31 +24,16 @@ import os
 import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
-# for linear regression statistics, if you want it
+# for logistic regression statistics, if you want it
 import statsmodels.api as sm
 from Numeric_Check import datetime_normalization
 # Working on implementation of catboost
-# from catboost import CatBoostRegressor, Pool
-
-
-# MLPipeline - A Machine Learning Pipeline tool implementation
-# Copyright (C) 2025 Jeffrey Hu
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# from catboost import CatBoostClassifier, Pool
+import gc
 
 
 """
+This is an implementation of an end-to-end regression machine learning pipeline (No classification)
 This is an implementation of an end-to-end regression machine learning pipeline (No classification)
 
 To use, look at the inputs to the example MLP implementation here
@@ -189,7 +176,7 @@ class FeatureNameTracker:
             },
             'lightgbm': {
                 'ordinal': [],
-                'categorical': [],  # Will store label encoded column names (they'll be the same)
+                'categorical': [],  # Will store label encoded column names
                 'numerical': []
             },
             'catboost': {
@@ -290,10 +277,10 @@ def dataPreprocessor(train_df, ordinal_columns, categorical_columns, numerical_c
     Returns:
     --------
     dict containing:
-        - sklearn_ready: DataFrame ready for sklearn models (for pipeline ingestion)
-        - lightgbm_ready: DataFrame ready for LightGBM (Still needs to be converted from df to lightgbm.dataset in pipe)
-        - catboost_ready: DataFrame ready for CatBoost (No model function call implemented yet)
-        - fitted_encoders: Dictionary of fitted encoders (For more testing data after the models are outputted)
+        - sklearn_ready: DataFrame ready for sklearn models (for pipeline ingestion
+        - lightgbm_ready: DataFrame ready for LightGBM (Still needs to be converted from df to lightgbm.dataset in
+        - catboost_ready: DataFrame ready for CatBoost (No model function call implemented yte
+        - fitted_encoders: Dictionary of fitted encoders
     If test_df is provided, each ready dataset will be a dict with 'train' and 'test' keys
     """
 
@@ -790,16 +777,16 @@ def dataPreprocessor(train_df, ordinal_columns, categorical_columns, numerical_c
 
 
 # predone tuner optuna, if gridsearchcv is not supplied
-def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_trials=100, tuner_param_ranges=None):
+def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_trials=1, tuner_param_ranges=None):
     """
-    Runs an Optuna optimization pipeline for sklearn-compatible models.
+    Runs an Optuna optimization pipeline for sklearn-compatible classification models.
 
     Parameters:
     -----------
     df : pandas DataFrame
         Preprocessed DataFrame ready for sklearn models
     target_col : str
-        Name of the target column, only for regression for now
+        Name of the target column
     output_dir : str, optional
         Directory to save optimization results. If None, results aren't saved to disk
     random_seed : int, default=42
@@ -822,26 +809,26 @@ def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_t
 
     # Define model creation functions
     def create_rf():
-        return RandomForestRegressor(random_state=random_seed)
+        return RandomForestClassifier(random_state=random_seed)
 
     def create_xgb():
-        return XGBRegressor(random_state=random_seed)
+        return XGBClassifier(random_state=random_seed)
 
     models = {
-        'rfr': create_rf,
-        'xgbr': create_xgb
+        'rfc': create_rf,
+        'xgbc': create_xgb
     }
 
     if not tuner_param_ranges:
         tuner_param_ranges= {
-            'rfr': {
+            'rfc': {
                 'n_estimators': (50, 1000, 'int'),
                 'max_depth': (3, 25, 'int'),
                 'min_samples_split': (2, 10, 'int'),
                 'min_samples_leaf': (1, 10, 'int'),
                 'max_features': (0.1, 1.0, 'float')
             },
-            'xgbr': {
+            'xgbc': {
                 'max_depth': (3, 20, 'int'),
                 'learning_rate': (1e-5, 0.2, 'float_log'),
                 'n_estimators': (50, 2000, 'int'),
@@ -881,14 +868,14 @@ def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_t
             model.set_params(**params)
             pipe = Pipeline([('model', model)])
 
-            cv_splitter = KFold(n_splits=5, shuffle=True, random_state=random_seed)
+            cv_splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_seed)
 
             # Use 5-fold cross validation, random seeded to cv_splitter
             scores = cross_val_score(
                 pipe,
                 X,
                 y,
-                scoring='neg_mean_squared_error',
+                scoring='f1_weighted',  # Changed to classification metric
                 cv=cv_splitter,
                 n_jobs=n_jobs
             )
@@ -896,15 +883,14 @@ def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_t
             return scores.mean()
 
         # Create and run study
-        # sampler = optuna.samplers.TPESampler(seed=random_seed)
         study = optuna.create_study(direction="maximize",
                                     study_name=f'{acronym}_sklearn',
                                     sampler=TPESampler(n_startup_trials=10))
 
-        # Let's skip rfr's study
+        # Let's skip rfc's study
         # Takes too long, and it doesn't produce results comparable to the boosted tree algos
-        if acronym == 'rfr':
-            set_n_trials = 3
+        if acronym == 'rfc':
+            set_n_trials = 1
         else:
             set_n_trials = n_trials
 
@@ -924,7 +910,8 @@ def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_t
             'model': acronym,
             'best_score': study.best_value,
             'best_params': study.best_params,
-            'val_r2': cross_val_score(pipe, X, y, scoring='r2', cv=5).mean()  # Use CV for R2
+            'val_accuracy': cross_val_score(pipe, X, y, scoring='accuracy', cv=5).mean(),
+            'val_f1_weighted': cross_val_score(pipe, X, y, scoring='f1_weighted', cv=5).mean()
         })
 
         # Store study results
@@ -955,7 +942,6 @@ def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_t
         'best_score', ascending=False
     )
 
-
     return {
         'best_models': best_models_df,
         'cv_results': cv_results_dict,
@@ -963,10 +949,9 @@ def skLearnTuner(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_t
     }
 
 
-# Time for the gigantic function/cell
 def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, param_grids=None, cv=None):
     """
-    Runs a grid search pipeline for multiple sklearn-compatible models.
+    Runs a grid search pipeline for multiple sklearn-compatible classification models.
 
     Parameters:
     -----------
@@ -978,7 +963,7 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
         Directory to save CV results. If None, results aren't saved to disk
     random_seed : int, default=42
         Random seed for reproducibility
-    n_jobs : int, default=-1
+    n_jobs : int, default=20
         Number of jobs for parallel processing
 
     Returns:
@@ -995,7 +980,7 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
 
     # Train-validation split
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=random_seed
+        X, y, test_size=0.2, random_state=random_seed, stratify=y
     )
 
     X_train = X_train.to_numpy()
@@ -1005,17 +990,17 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
 
     X_train_val, y_train_val, ps = get_train_val_ps(X_train, y_train, X_val, y_val)
 
-    # Define models
+    # Define models - converted from regressors to classifiers
     models = {
-        'lr': LinearRegression(),
-        'sgdr': SGDRegressor(random_state=random_seed),
-        'mlpr': MLPRegressor(
+        'lr': LogisticRegression(random_state=random_seed, max_iter=1000),
+        'sgdc': SGDClassifier(random_state=random_seed),
+        'mlpc': MLPClassifier(
             early_stopping=True,
             random_state=random_seed,
             hidden_layer_sizes=(50, 50,)
         ),
-        'rfr': RandomForestRegressor(random_state=random_seed),
-        'xgbr': XGBRegressor(random_state=random_seed)
+        'rfc': RandomForestClassifier(random_state=random_seed),
+        'xgbc': XGBClassifier(random_state=random_seed)
     }
 
     # Create pipelines
@@ -1028,34 +1013,39 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
     if not param_grids:
         param_grids = {
             'lr': [{
-                'model__fit_intercept': [False, True]
+                'model__fit_intercept': [False, True],
+                # 'model__C': [0.001, 0.01, 0.1, 1.0],
+                # 'model__solver': ['liblinear', 'saga'],
+                # 'model__penalty': ['l1', 'l2']
             }],
 
-            'sgdr': [{
+            'sgdc': [{
                 'model__eta0': [0.1, 0.001, 0.00001],
-                'model__alpha': [0.1, 0.001, 0.00001],
-                'model__learning_rate': ['optimal', 'invscaling', 'adaptive']
+                # 'model__alpha': [0.1, 0.001, 0.00001],
+                # 'model__learning_rate': ['optimal', 'invscaling', 'adaptive'],
+                # 'model__loss': ['log_loss', 'modified_huber', 'hinge']
             }],
 
-            'mlpr': [{
+            'mlpc': [{
                 'model__alpha': [0.3, 0.1, 0.001],
-                'model__learning_rate': ['constant', 'adaptive']
+                # 'model__learning_rate': ['constant', 'adaptive'],
+                # 'model__activation': ['relu', 'tanh', 'logistic']
             }],
 
-
-            'rfr': [{
+            'rfc': [{
                 'model__n_estimators': [75, 150, 500],
-                'model__max_depth': [None, 2, 5],
-                'model__min_samples_split': [4, 7],
-                'model__min_samples_leaf': [2, 3],
-                'model__max_features': ['sqrt', 0.5]
+                # 'model__max_depth': [None, 2, 5],
+                # 'model__min_samples_split': [4, 7],
+                # 'model__min_samples_leaf': [2, 3],
+                # 'model__max_features': ['sqrt', 0.5],
+                # 'model__class_weight': ['balanced', None]
             }],
 
-            'xgbr': [{
+            'xgbc': [{
                 'model__max_depth': [None, 3, 7],
-                'model__n_estimators': [75, 150, 300, 500],
-                'model__learning_rate': [0.1, 0.001, 0.00001],
-                'model__gamma': [0.5, 2, 3, 5]
+                # 'model__n_estimators': [75, 150, 300, 500],
+                # 'model__learning_rate': [0.1, 0.001, 0.00001],
+                # 'model__gamma': [0.5, 2, 3, 5]
             }]
         }
 
@@ -1068,16 +1058,9 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
     for acronym, pipe in pipes.items():
         print(f"Running GridSearchCV for {acronym}...\n")
 
-        if acronym == 'xgbr':
+        if acronym == 'xgbc':
             fit_params = {
                 'model__eval_set': [(X_val, y_val)],
-                # 'model__eval_metric': 'rmse',
-                # 'model__callbacks': [
-                #     xgb.callback.EarlyStopping(
-                #         rounds=50,
-                #         save_best=True
-                #     )
-                # ],
                 'model__verbose': False
             }
         else:
@@ -1094,7 +1077,7 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
         gs = GridSearchCV(
             estimator=pipe,
             param_grid=param_grids[acronym],
-            scoring='neg_mean_squared_error',
+            scoring='f1_weighted',  # Changed from 'neg_mean_squared_error' to 'f1_weighted'
             n_jobs=n_jobs,
             cv=ps if (cv is None) else cv,
             return_train_score=True
@@ -1106,15 +1089,15 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
         # Get validation score from the predefined split results
         val_scores = gs.cv_results_['split0_test_score']
         best_val_score_idx = np.argmax(val_scores)
-        # val_r2 = val_scores[best_val_score_idx]
-        val_r2 = cross_val_score(pipe, X, y, scoring='r2', cv=5).mean()  # Use CV for R2 because why not
+        # Using f1 score instead of r2 for classification
+        val_f1 = cross_val_score(pipe.set_params(**gs.best_params_), X, y, scoring='f1_weighted', cv=5).mean()
 
         # Store best model results
         best_models_results.append({
             'model': acronym,
-            'best_score': gs.best_score_,
+            'best_score': gs.best_score_,  # This is now accuracy from GridSearchCV
             'best_params': gs.best_params_,
-            'val_r2': val_r2
+            'val_f1_weighted': val_f1  # Using F1 score instead of R2
         })
 
         # Store CV results
@@ -1156,7 +1139,7 @@ def skLearnPipeline(df, target_col, output_dir=None, random_seed=42, n_jobs=20, 
     }
 
 
-def skLearnOrchestrator(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_trials=100, cv=None,
+def skLearnOrchestrator(df, target_col, output_dir=None, random_seed=42, n_jobs=20, n_trials=1, cv=None,
                         param_grids=None, tuner_param_ranges=None, gridsearch=True, tuner=True):
     if (not gridsearch and not tuner):
         print(f'One of gridsearch or tuner must be set to true for this pipeline to run.')
@@ -1198,215 +1181,25 @@ def skLearnOrchestrator(df, target_col, output_dir=None, random_seed=42, n_jobs=
     }
 
 
-
-class LightGBMGridSearchCV(BaseEstimator):
-    def __init__(self, param_grid, scoring='neg_mean_squared_error', n_jobs=20, cv=None, return_train_score=True):
-        self.param_grid = param_grid
-        self.scoring = scoring
-        self.n_jobs = n_jobs
-        self.cv = cv
-        self.return_train_score = return_train_score
-        self.cv_results_ = None
-        self.best_score_ = None
-        self.best_params_ = None
-        self.best_estimator_ = None
-        self.best_iteration_ = None
-
-    def _get_param_combinations(self):
-        from itertools import product
-        keys = self.param_grid[0].keys()
-        values = self.param_grid[0].values()
-        return [dict(zip(keys, v)) for v in product(*values)]
-
-    def fit(self, train_dataset, valid_dataset=None):
-        if not isinstance(train_dataset, lgb.Dataset):
-            raise ValueError("train_dataset must be a LightGBM Dataset")
-
-        param_combinations = self._get_param_combinations()
-        results = []
-
-        for params in param_combinations:
-            lgb_params = {k.replace('model__', ''): v for k, v in params.items()}
-            if 'objective' not in lgb_params:
-                lgb_params['objective'] = 'regression'
-
-            lgb_params['verbosity'] = -1
-            lgb_params['early_stopping_round'] = 50
-            lgb_params['num_threads'] = 1
-
-            model = lgb.train(
-                params=lgb_params,
-                train_set=train_dataset,
-                valid_sets=[train_dataset, valid_dataset] if valid_dataset else [train_dataset],
-                valid_names=['train', 'valid'] if valid_dataset else ['train'],
-                callbacks=[lgb.log_evaluation(period=-1)]
-            )
-
-            best_iter = model.best_iteration
-
-            X_train = train_dataset.get_data()
-            y_train = train_dataset.get_label()
-            y_train_pred = model.predict(X_train)
-            train_score = -mean_squared_error(y_train, y_train_pred)
-
-            if valid_dataset:
-                X_valid = valid_dataset.get_data()
-                y_valid = valid_dataset.get_label()
-                y_valid_pred = model.predict(X_valid)
-                valid_score = -mean_squared_error(y_valid, y_valid_pred)
-            else:
-                valid_score = train_score
-
-            results.append({
-                'params': params,
-                'mean_train_score': train_score,
-                'mean_test_score': valid_score,
-                'best_iteration': best_iter,
-                'model': model
-            })
-
-        self.cv_results_ = pd.DataFrame(results)
-        best_idx = self.cv_results_['mean_test_score'].idxmax()
-        self.best_score_ = self.cv_results_.loc[best_idx, 'mean_test_score']
-        self.best_params_ = self.cv_results_.loc[best_idx, 'params']
-        self.best_estimator_ = self.cv_results_.loc[best_idx, 'model']
-        self.best_iteration_ = self.cv_results_.loc[best_idx, 'best_iteration']
-
-        return self
-
-
-    def predict(self, X):
-        if self.best_estimator_ is None:
-            raise ValueError("Call fit before predict")
-        return self.best_estimator_.predict(X, num_iteration=self.best_estimator_.best_iteration)
-
-
-def lightgbmPipeline(X_train, y_train, X_val, y_val, target_col, categorical_features=None, output_dir=None, n_jobs=20):
-    """
-    Runs a grid search for LightGBM model with compatible output format to skLearnPipeline.
-
-    Parameters:
-    -----------
-    X_train : array-like
-        Training features
-    y_train : array-like
-        Training target
-    X_val : array-like
-        Validation features
-    y_val : array-like
-        Validation target
-    categorical_features : list, optional
-        List of categorical feature indices
-    output_dir : str, optional
-        Directory to save CV results
-    n_jobs : int, default=20
-        Number of jobs for parallel processing
-
-    Returns:
-    --------
-    dict containing:
-        - 'best_models': DataFrame with best model and scores
-        - 'cv_results': Dict of DataFrames with full CV results
-        - 'best_estimators': Dict with best fitted estimator
-    """
-
-    # Create LightGBM datasets
-    train_data = lgb.Dataset(
-        X_train,
-        label=y_train,
-        categorical_feature=categorical_features,
-        free_raw_data=True
-    )
-    val_data = lgb.Dataset(
-        X_val,
-        label=y_val,
-        categorical_feature=categorical_features,
-        reference=train_data,
-        free_raw_data=True
-    )
-
-    # Define parameter grid
-    param_grid = [{
-        'num_leaves': [31, 132],
-        'max_depth': [-1, 5, 10],
-        'learning_rate': [0.01, 0.1],
-        'n_estimators': [100, 200, 300],
-        'min_child_samples': [20, 50],
-        # 'subsample': [0.8, 1.0],
-        # 'colsample_bytree': [0.8, 1.0],
-        'reg_alpha': [0, 0.1, 0.5],
-        'reg_lambda': [0, 0.1, 0.5],
-        'min_gain_to_split': [0.1]
-    }]
-
-    print("Running GridSearchCV for LightGBM...\n")
-
-    # Perform grid search
-    gs = LightGBMGridSearchCV(
-        param_grid=param_grid,
-        scoring='neg_mean_squared_error',
-        n_jobs=n_jobs,
-        return_train_score=True
-    )
-
-    # Fit model
-    gs.fit(train_data, val_data)
-
-    # Calculate validation R²
-    y_val_pred = gs.predict(X_val)
-    val_r2 = r2_score(y_val, y_val_pred)
-
-    # Create results in same format as skLearnPipeline
-    best_models_df = pd.DataFrame([{
-        'model': 'lgbm',
-        'best_score': gs.best_score_,
-        'best_params': gs.best_params_,
-        'val_r2': val_r2
-    }])
-
-    # Sort and format CV results
-    cv_results = gs.cv_results_.sort_values(
-        by=['mean_test_score'],
-        ascending=False
-    )
-
-    export_df = cv_results.head(5)
-
-
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        export_df.to_csv(
-            os.path.join(output_dir, 'lgbm_cv_results.csv'),
-            index=False
-        )
-
-    return {
-        'best_models': best_models_df,
-        'cv_results': {'lgbm': cv_results},
-        'best_estimators': {'lgbm': gs.best_estimator_}
-    }
-
-
 class LightGBMOptunaCV(BaseEstimator):
-    def __init__(self, scoring='neg_mean_squared_error', n_trials=100, n_jobs=2,
+    def __init__(self, scoring='f1_weighted', n_trials=1, n_jobs=2,
                  timeout=None, cv=5, random_state=42):
         """
         LightGBM optimizer using Optuna with cross-validation.
 
         Parameters:
         -----------
-        scoring : str, default='neg_mean_squared_error'
+        scoring : str, default='accuracy'
             Scoring metric for optimization
-            Currently only takes neg_mean_squared_error, don't change that lmao
+            Options include 'accuracy', 'f1', 'auc', 'logloss'
         n_trials : int, default=100
             Number of Optuna study trials
-        n_jobs : int, default=20
+        n_jobs : int, default=2
             Number of parallel jobs
             Threads for each model in lightgbm have been limited to 1
         timeout : int, optional
             Time limit in seconds for the optimization
-            Don't turn this on lmao
-        n_splits : int, default=5
+        cv : int, default=5
             Number of cross-validation folds
         random_state : int, default=42
             Random state for cross-validation
@@ -1423,21 +1216,22 @@ class LightGBMOptunaCV(BaseEstimator):
         self.best_estimator_ = None
         self.best_iteration_ = None
         self.trials_dataframe = None
-        self.n_parallel_trials = min(2, n_jobs)  # More jobs causes RAM AND CPU allocation issues
-
+        self.n_parallel_trials = min(4, n_jobs)  # Move this up here
 
     def _objective(self, trial, X, y, categorical_features=None, param=None):
+        # Begin with garbage collection
         gc.collect()
 
         if not param:
             param = {
-                'objective': 'regression',
+                'objective': 'binary',  # Changed from 'regression' to 'binary'
                 'verbosity': -1,
                 'early_stopping_round': 50,
                 'num_threads': 1,
                 'feature_pre_filter': False,  # This was running into errors
                 'use_missing': True,
                 'zero_as_missing': False,
+                'metric': 'binary_logloss',  # Added appropriate metric for binary classification
 
                 # Some compute limiting for lightgbm, it uses too many threads
                 'num_iterations_per_thread': 128,
@@ -1451,11 +1245,11 @@ class LightGBMOptunaCV(BaseEstimator):
                 # Parameters to optimize
                 'boosting_type': trial.suggest_categorical('boosting_type', ['gbdt', 'goss']),
                 # 100 to tighten the overfitting range on CV validation.
-                'num_leaves': trial.suggest_int('num_leaves', 15, 200),
-                'max_depth': trial.suggest_int('max_depth', 2, 16),
+                'num_leaves': trial.suggest_int('num_leaves', 15, 200),  # Dropping this for now, just to avoid memory issues
+                'max_depth': trial.suggest_int('max_depth', 2, 20),
                 'learning_rate': trial.suggest_float('learning_rate', 1e-4, 3, log=True),
                 'learning_rate_decay': trial.suggest_float('learning_rate_decay', 0.8, 1.0),
-                'n_estimators': trial.suggest_int('n_estimators', 50, 1000),
+                'n_estimators': trial.suggest_int('n_estimators', 50, 2000),
                 'min_child_samples': trial.suggest_int('min_child_samples', 1, 200),
                 'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 1, 50),  # Needed to add this with pre_filter
                 # Small dataset with a bunch of categoricals may benefit from this
@@ -1468,11 +1262,6 @@ class LightGBMOptunaCV(BaseEstimator):
                 'feature_fraction': trial.suggest_float('feature_fraction', 0.5, 1.0),
                 'min_gain_to_split': trial.suggest_float('min_gain_to_split', 0.1, 1.0)
             }
-
-        # # If boosting_type is 'goss', remove subsample parameter as it's not used (goss has its own subsampling method)
-        # I already removed it in this case, wasn't helping with gbdt anyways
-        # if param['boosting_type'] == 'goss':
-        #     param.pop('subsample', None)
 
         # LightGBM doesn't work with cross_val_score, so we need all this to stand in
         kf = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
@@ -1505,14 +1294,31 @@ class LightGBMOptunaCV(BaseEstimator):
                 callbacks=[lgb.early_stopping(50, verbose=False)]
             )
 
-            # Get validation score for this fold
+            # Get validation score for this fold based on scoring metric
             y_pred = model.predict(X_valid_fold)
-            fold_score = -mean_squared_error(y_valid_fold, y_pred)
+
+            if self.scoring == 'accuracy':
+                y_pred_binary = (y_pred > 0.5).astype(int)
+                fold_score = accuracy_score(y_valid_fold, y_pred_binary)
+            elif self.scoring == 'f1':
+                y_pred_binary = (y_pred > 0.5).astype(int)
+                fold_score = f1_score(y_valid_fold, y_pred_binary)
+            elif self.scoring == 'f1_weighted' or self.scoring == 'weighted':
+                y_pred_binary = (y_pred > 0.5).astype(int)
+                fold_score = f1_score(y_valid_fold, y_pred_binary, average='weighted')
+            elif self.scoring == 'auc':
+                fold_score = roc_auc_score(y_valid_fold, y_pred)
+            elif self.scoring == 'logloss':
+                fold_score = -log_loss(y_valid_fold, y_pred)  # Negative because Optuna maximizes
+            else:
+                # Default to accuracy if scoring not recognized
+                y_pred_binary = (y_pred > 0.5).astype(int)
+                fold_score = accuracy_score(y_valid_fold, y_pred_binary)
+
             scores.append(fold_score)
             gc.collect()
 
         return np.mean(scores)
-
 
     def fit(self, df, target_col, categorical_features=None):
         """
@@ -1561,10 +1367,11 @@ class LightGBMOptunaCV(BaseEstimator):
         # Train final model with best parameters
         best_params = self.best_params_.copy()
         best_params.update({
-            'objective': 'regression',
+            'objective': 'binary',  # Changed from 'regression' to 'binary'
             'verbosity': -1,
             'early_stopping_round': 50,
-            'num_threads': 1
+            'num_threads': 1,
+            'metric': 'binary_logloss'  # Added appropriate metric
         })
 
         train_data = lgb.Dataset(
@@ -1584,40 +1391,54 @@ class LightGBMOptunaCV(BaseEstimator):
 
         return self
 
-
     def predict(self, X):
-        """Make predictions with the best model."""
+        """Make probability predictions with the best model."""
         if self.best_estimator_ is None:
             raise ValueError("Call fit before predict")
         return self.best_estimator_.predict(X, num_iteration=self.best_iteration_)
 
+    def predict_proba(self, X):
+        """Make probability predictions with the best model."""
+        if self.best_estimator_ is None:
+            raise ValueError("Call fit before predict_proba")
+        probas = self.best_estimator_.predict(X, num_iteration=self.best_iteration_)
+        # Format as 2D array with probabilities for both classes
+        return np.vstack([1 - probas, probas]).T
+
+    def predict_classes(self, X, threshold=0.5):
+        """Make class predictions with the best model."""
+        if self.best_estimator_ is None:
+            raise ValueError("Call fit before predict_classes")
+        probas = self.best_estimator_.predict(X, num_iteration=self.best_iteration_)
+        return (probas > threshold).astype(int)
+
 
 def lightgbmTuner(df, target_col, categorical_features=None,
-                  output_dir=None, n_jobs=2, n_trials=100, timeout=None,
+                  output_dir=None, n_jobs=2, n_trials=1, timeout=None,
                   cv=5, random_state=42):
     """
-    Runs Optuna optimization for LightGBM model with compatible output format to skLearnPipeline.
+    Runs Optuna optimization for LightGBM classification model with compatible output format to skLearnPipeline.
 
     Parameters:
     -----------
-    X_train : array-like
-        Training features
-    y_train : array-like
-        Training target
-    X_val : array-like
-        Validation features
-    y_val : array-like
-        Validation target
+    df : pandas.DataFrame
+        Input DataFrame
+    target_col : str
+        Name of target column
     categorical_features : list, optional
-        List of categorical feature indices
+        List of categorical feature names
     output_dir : str, optional
         Directory to save optimization results
-    n_jobs : int, default=20
+    n_jobs : int, default=2
         Number of parallel jobs
     n_trials : int, default=100
         Number of optimization trials
     timeout : int, optional
         Time limit in seconds for the optimization
+    cv : int, default=5
+        Number of cross-validation folds
+    random_state : int, default=42
+        Random state for cross-validation
 
     Returns:
     --------
@@ -1627,21 +1448,11 @@ def lightgbmTuner(df, target_col, categorical_features=None,
         - 'best_estimators': Dict with best fitted estimator
     """
 
-    # # Convert data to numpy arrays (for lightGBM dataset creation)
-    # X_train = np.asarray(X_train)
-    # y_train = np.asarray(y_train)
-    # X_val = np.asarray(X_val)
-    # y_val = np.asarray(y_val)
-    #
-    # # Check Target for null values (thought I cleaned them in datapreprocessing
-    # # but I'm getting errors so better safe
-    # if np.any(np.isnan(y_train)) or np.any(np.isnan(y_val)):
-    #     raise ValueError("Target variable contains NaN values")
-
-    print("Running Optuna optimization for LightGBM...\n")
+    print("Running Optuna optimization for LightGBM Classification...\n")
 
     # Perform optimization
     opt = LightGBMOptunaCV(
+        scoring='f1_weighted',  # Changed from MSE to f1_weighted, in line with the other pipelines
         n_trials=n_trials,
         n_jobs=n_jobs,
         timeout=timeout,
@@ -1651,7 +1462,7 @@ def lightgbmTuner(df, target_col, categorical_features=None,
     # Fit model
     opt.fit(df, target_col, categorical_features)
 
-    # Calculate validation R²
+    # Calculate validation metrics
     X = df.drop(columns=[target_col])
     y = df[target_col]
     cv_splitter = KFold(n_splits=cv, shuffle=True, random_state=random_state)
@@ -1663,21 +1474,32 @@ def lightgbmTuner(df, target_col, categorical_features=None,
         y_train, y_valid = y.iloc[train_idx], y.iloc[valid_idx]
 
         train_data = lgb.Dataset(X_train, label=y_train)
-        model = lgb.train(opt.best_params_, train_data)
+        params = opt.best_params_.copy()
+        params.update({'objective': 'binary', 'metric': 'binary_logloss'})
+        model = lgb.train(params, train_data)
         y_pred = model.predict(X_valid)
+        y_pred_binary = (y_pred > 0.5).astype(int)
 
-        cv_predictions.extend(y_pred)
+        cv_predictions.extend(y_pred_binary)
         cv_actuals.extend(y_valid)
 
-    # Here's our r2
-    val_r2 = r2_score(cv_actuals, cv_predictions)
+    # Calculate classification metrics
+    from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
-    # Create results in same format as skLearnPipeline (we're joining them together later)
+    # Convert predictions to numpy arrays
+    cv_predictions = np.array(cv_predictions)
+    cv_actuals = np.array(cv_actuals)
+
+    val_accuracy = accuracy_score(cv_actuals, cv_predictions)
+    val_f1 = f1_score(cv_actuals, cv_predictions, average='weighted')
+
+    # Create results in same format as skLearnPipeline
     best_models_df = pd.DataFrame([{
         'model': 'lgbm',
         'best_score': opt.best_score_,
         'best_params': opt.best_params_,
-        'val_r2': val_r2
+        'val_accuracy': val_accuracy,
+        'val_f1_weighted': val_f1
     }])
 
     export_df = opt.trials_dataframe.sort_values(by='value', ascending=False)
@@ -1711,6 +1533,150 @@ def catboostTuner(df, target_col, categorical_features=None,
                   output_dir=None, n_jobs=3, n_trials=100, timeout=None,
                   cv=5, random_state=42):
     pass
+    # """
+    # Tune CatBoost hyperparameters using Optuna.
+    #
+    # Args:
+    #     df: pandas DataFrame containing features and target
+    #     target_col: string, name of the target column
+    #     categorical_features: list of categorical column names
+    #     output_dir: string, directory to save model artifacts
+    #     n_jobs: int, number of parallel jobs
+    #     n_trials: int, number of optimization trials
+    #     timeout: int, timeout in seconds for optimization
+    #     cv: int, number of cross-validation folds
+    #     random_state: int, random state for reproducibility
+    #
+    # Returns:
+    #     dict with best parameters and best score
+    # """
+    #
+    # # Prepare data
+    # X = df.drop(columns=[target_col])
+    # y = df[target_col]
+    #
+    # splitter = KFold(n_splits=cv, shuffle=True, random_state=random_state)
+    #
+    # # Initialize lists to store trial information
+    # trials_list = []
+    #
+    # def objective(trial):
+    #     # Common parameters
+    #     param = {
+    #         'iterations': trial.suggest_int('iterations', 100, 1000),
+    #         'learning_rate': trial.suggest_float('learning_rate', 1e-3, 0.1, log=True),
+    #         'depth': trial.suggest_int('depth', 4, 10),
+    #         'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-8, 10.0, log=True),
+    #         "bootstrap_type": trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli", "MVS"]),
+    #         'random_strength': trial.suggest_float('random_strength', 1e-8, 10.0, log=True),
+    #         'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 10.0),
+    #         'od_wait': trial.suggest_int('od_wait', 10, 50),
+    #         'leaf_estimation_iterations': trial.suggest_int('leaf_estimation_iterations', 1, 10),
+    #         "od_type": "Iter",
+    #         'random_state': random_state,
+    #         'verbose': False
+    #     }
+    #
+    #     # Handle different bootstrap types
+    #     if param["bootstrap_type"] == "Bernoulli":
+    #         param["subsample"] = trial.suggest_float("subsample", 0.1, 1.0)
+    #
+    #     # Initialize scores list
+    #     fold_scores = []
+    #
+    #     # Perform cross-validation with Pool objects
+    #     for fold_idx, (train_idx, val_idx) in enumerate(splitter.split(X, y)):
+    #         X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+    #         y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+    #
+    #         # Create Pool objects
+    #         train_pool = Pool(
+    #             data=X_train,
+    #             label=y_train,
+    #             cat_features=categorical_features
+    #         )
+    #         val_pool = Pool(
+    #             data=X_val,
+    #             label=y_val,
+    #             cat_features=categorical_features
+    #         )
+    #
+    #         # Initialize and train model
+    #         model = CatBoostRegressor(**param)
+    #         eval_metric = 'RMSE'
+    #
+    #         # Fit model
+    #         model.fit(
+    #             train_pool,
+    #             eval_set=val_pool,
+    #             use_best_model=True,
+    #             early_stopping_rounds=50,
+    #             verbose=False
+    #         )
+    #
+    #         # Get validation score
+    #         score = model.get_best_score()['validation'][eval_metric]
+    #         score = -score  # Negative for minimization
+    #         fold_scores.append(score)
+    #
+    #         trials_list.append({
+    #             'number': trial.number,
+    #             'value': score,
+    #             'params': trial.params,
+    #             'state': trial.state,
+    #         })
+    #
+    #     # Return mean score
+    #     return np.mean(fold_scores)
+    #
+    # # Create study
+    # study = optuna.create_study(direction='minimize')
+    #
+    # # Optimize
+    # study.optimize(
+    #     objective,
+    #     n_trials=n_trials,
+    #     timeout=timeout,
+    #     # Setting n_jobs here, CatBoost (like LightGBM) has internal parallelization so be careful running more than 2
+    #     n_jobs=n_jobs
+    # )
+    #
+    # trials_df = pd.DataFrame(trials_list)
+    #
+    # # Get best parameters
+    # best_params = study.best_params
+    # best_score = -study.best_value  # Convert back to positive score
+    #
+    # # Save study if output directory is provided
+    # if output_dir:
+    #     os.makedirs(output_dir, exist_ok=True)
+    #     study.trials_dataframe().to_csv(
+    #         os.path.join(output_dir, 'placeholder.csv'),
+    #         index=False
+    #     )
+    #
+    # # Train final model with best parameters
+    # # Create final Pool object with all data
+    # final_pool = Pool(
+    #     data=X,
+    #     label=y,
+    #     cat_features=categorical_features
+    # )
+    #
+    # final_model = CatBoostRegressor(**best_params)
+    #
+    # best_models_df = pd.DataFrame([{
+    #     'model': 'catboost',
+    #     'best_score': study.best_value,
+    #     'best_params': best_params,
+    #     # 'val_r2': val_r2
+    # }])
+    #
+    # return {
+    #     'best_models': best_models_df,
+    #     'cv_results': {'cat': trials_df},
+    #     'best_estimators': {'cat': final_model}
+    # }
 
 
 def combine_pipeline_results(sklearn_results, lightgbm_results, catboost_results=None):
@@ -1746,7 +1712,7 @@ def combine_pipeline_results(sklearn_results, lightgbm_results, catboost_results
 
 def pipeline_predict(pipeline_results, test_df, target_col=None, id_columns=None):
     """
-    Make predictions using the best models from the pipeline.
+    Make predictions using the best models from the classification pipeline.
 
     Parameters:
     -----------
@@ -1771,29 +1737,63 @@ def pipeline_predict(pipeline_results, test_df, target_col=None, id_columns=None
     X_test = test_df.drop(columns=drop_cols)
 
     # Initialize results dictionary
-    results = {'predictions': {}}
-
-    i = 0
+    results = {'predictions': {}, 'probabilities': {}}
 
     # Get predictions from each model
     for model_name, estimator in pipeline_results['best_estimators'].items():
+        # Get class predictions
         predictions = pd.Series(
-            estimator.predict(X_test),
+            estimator.predict(X_test) if not isinstance(estimator, lgb.Booster)
+            else (estimator.predict(X_test) > 0.5).astype(int),
             index=test_df.index,
             name=model_name
         )
         results['predictions'][model_name] = predictions
-        # print(f"Created predictions for {model_name}, index {i}")
-        # i += 1
+
+        # Check if the model supports probability estimates
+        if hasattr(estimator, 'predict_proba'):
+            # Store probability predictions if available
+            proba = estimator.predict_proba(X_test)
+            # For binary classification, store probability of positive class
+            if proba.shape[1] == 2:
+                results['probabilities'][f"{model_name}_proba"] = pd.Series(
+                    proba[:, 1],
+                    index=test_df.index,
+                    name=f"{model_name}_proba"
+                )
+            else:
+                # For multi-class, store all probabilities
+                for i, class_name in enumerate(estimator.classes_):
+                    results['probabilities'][f"{model_name}_proba_class_{class_name}"] = pd.Series(
+                        proba[:, i],
+                        index=test_df.index,
+                        name=f"{model_name}_proba_class_{class_name}"
+                    )
+        elif isinstance(estimator, lgb.Booster):
+            # Handle LightGBM booster directly - its predict() returns probabilities
+            proba = estimator.predict(X_test)
+            # For binary classification in LightGBM, add to probabilities dict
+            results['probabilities'][f"{model_name}_proba"] = pd.Series(
+                proba,
+                index=test_df.index,
+                name=f"{model_name}_proba"
+            )
 
     # Convert predictions to DataFrame
     results['predictions'] = pd.DataFrame(results['predictions'])
 
-    # Check index after conversion, since it was originally a series the index should be preserved.
-    assert test_df.index.equals(pd.DataFrame(results['predictions']).index)
+    if results['probabilities']:
+        results['probabilities'] = pd.DataFrame(results['probabilities'])
 
-    # Join predictions with original test data, outputting this individually
+    # Check index after conversion
+    assert test_df.index.equals(results['predictions'].index)
+
+    # Join predictions with original test data
     output_df = pd.concat([test_df, results['predictions']], axis=1, verify_integrity=True)
+
+    # Add probability predictions if available
+    if results['probabilities'] is not None and not results['probabilities'].empty:
+        output_df = pd.concat([output_df, results['probabilities']], axis=1, verify_integrity=True)
 
     # Calculate metrics if target is provided
     if target_col in test_df.columns:
@@ -1802,12 +1802,18 @@ def pipeline_predict(pipeline_results, test_df, target_col=None, id_columns=None
 
         for model_name in results['predictions'].columns:
             y_pred = results['predictions'][model_name]
+
+            # Calculate classification metrics
             metrics.append({
                 'model': model_name,
-                'test_r2': r2_score(y_test, y_pred),
-                'test_rmse': np.sqrt(mean_squared_error(y_test, y_pred)),
-                'test_mae': mean_absolute_error(y_test, y_pred)
+                'test_accuracy': accuracy_score(y_test, y_pred),
+                'test_precision': precision_score(y_test, y_pred, average='weighted', zero_division=0),
+                'test_recall': recall_score(y_test, y_pred, average='weighted', zero_division=0),
+                'test_f1_weighted': f1_score(y_test, y_pred, average='weighted', zero_division=0)
             })
+
+            # Add confusion matrix
+            results[f'confusion_matrix_{model_name}'] = confusion_matrix(y_test, y_pred)
 
         results['metrics'] = pd.DataFrame(metrics)
 
@@ -1837,7 +1843,7 @@ def save_feature_importance(pipeline_results, X, output_dir):
 
     for model_name, pipeline in pipeline_results['best_estimators'].items():
         # Check if the model is a tree-based model that supports feature importance
-        if model_name.lower() in ['rfr', 'xgbr', 'lgbm']:
+        if model_name.lower() in ['rfc', 'xgbc', 'lgbm']:
             try:
                 # Extract the model from the pipeline
                 if hasattr(pipeline, 'named_steps') and 'model' in pipeline.named_steps:
@@ -1846,9 +1852,9 @@ def save_feature_importance(pipeline_results, X, output_dir):
                     model = pipeline  # In case it's not a pipeline
 
                 # Get feature importance based on model type
-                if model_name.lower() == 'rfr':
+                if model_name.lower() == 'rfc':
                     importance = model.feature_importances_
-                elif model_name.lower() == 'xgbr':
+                elif model_name.lower() == 'xgbc':
                     importance = model.feature_importances_
                 elif model_name.lower() == 'lgbm':
                     # Handle both scikit-learn wrapper and native LightGBM Booster
@@ -1868,7 +1874,7 @@ def save_feature_importance(pipeline_results, X, output_dir):
 
                 # Create DataFrame for this model's feature importance
                 imp_df = pd.DataFrame({
-                    'feature': feature_names,
+                    'feature': feature_names[:len(importance)],  # Ensure lengths match
                     'importance': importance
                 })
 
@@ -1905,8 +1911,12 @@ def save_feature_importance(pipeline_results, X, output_dir):
                     plt.savefig(os.path.join(output_dir, f"{unique_name}_feature_importance.png"))
                     plt.close()
 
+                print(f"Successfully extracted feature importance for {model_name}")
+
             except Exception as e:
                 print(f"Error extracting feature importance for {model_name}: {e}")
+                import traceback
+                traceback.print_exc()  # Print full traceback for debugging
 
     # Combine all feature importance DataFrames if there are any
     if feature_importance_dfs:
@@ -1920,6 +1930,7 @@ def save_feature_importance(pipeline_results, X, output_dir):
 
         return all_importance
     else:
+        print('No feature importance to join.')
         return None
 
 
@@ -1933,9 +1944,51 @@ def shallowMachineLearningPipeline(df, test_df, ordinal_columns, categorical_col
     if isinstance(datetime_columns, str):
         datetime_columns = [datetime_columns]
 
+
+    # # Print target column before preprocessing
+    # # Prepre analytics
+    # print(f"\n{'=' * 50}\nTARGET COLUMN BEFORE PREPROCESSING\n{'=' * 50}")
+    # print(f"Unique values in {target_col}: {df[target_col].unique()}")
+    # print(f"Data type of {target_col}: {df[target_col].dtype}")
+    # print(f"Value counts of {target_col}:\n{df[target_col].value_counts(dropna=False)}")
+    #
+    # # Print categorical columns before preprocessing
+    # print(f"\n{'=' * 50}\nCATEGORICAL COLUMNS BEFORE PREPROCESSING\n{'=' * 50}")
+    # for col in categorical_columns:
+    #     print(f"Unique values in {col}: {df[col].unique()}")
+    #     print(f"Data type of {col}: {df[col].dtype}")
+    #     print(f"Value counts of {col}:\n{df[col].value_counts(dropna=False)}\n")
+
+
     data_dict, categorical_columns = dataPreprocessor(df, ordinal_columns, categorical_columns, numerical_columns,
                                                       target_col, id_columns=id_columns,
                                                       datetime_columns=datetime_columns, test_df=test_df)
+
+
+    # # Print target column after preprocessing
+    # # Post datapreprocessing
+    # print(f"\n{'=' * 50}\nTARGET COLUMN AFTER PREPROCESSING\n{'=' * 50}")
+    # for df_name, df_dict in data_dict.items():
+    #     if df_name != 'fitted_encoders':
+    #         for subset_name, df in df_dict.items():
+    #             if target_col in df.columns:
+    #                 print(f"Dataset: {df_name}, Subset: {subset_name}")
+    #                 print(f"Unique values in {target_col}: {df[target_col].unique()}")
+    #                 print(f"Data type of {target_col}: {df[target_col].dtype}")
+    #                 print(f"Value counts of {target_col}:\n{df[target_col].value_counts(dropna=False)}\n")
+    #
+    # # Print categorical columns after preprocessing
+    # print(f"\n{'=' * 50}\nCATEGORICAL COLUMNS AFTER PREPROCESSING\n{'=' * 50}")
+    # for df_name, df_dict in data_dict.items():
+    #     if df_name != 'fitted_encoders':
+    #         for subset_name, df in df_dict.items():
+    #             print(f"Dataset: {df_name}, Subset: {subset_name}")
+    #             for col in categorical_columns:
+    #                 if col in df.columns:
+    #                     print(f"Unique values in {col}: {df[col].unique()}")
+    #                     print(f"Data type of {col}: {df[col].dtype}")
+    #                     print(f"Value counts of {col}:\n{df[col].value_counts(dropna=False)}\n")
+
 
     # Save the fitted encoders
     joblib.dump(data_dict['fitted_encoders'], rf'{output_dir}/fitted_encoders.joblib')
@@ -1966,9 +2019,9 @@ def shallowMachineLearningPipeline(df, test_df, ordinal_columns, categorical_col
     print("\nBest Models Summary:")
     print(f"\n{sklearn_results['best_models']}")
     print("\nRandom Forest CV Results:")
-    print(f"\n{sklearn_results['cv_results']['rfr']}")
+    print(f"\n{sklearn_results['cv_results']['rfc']}")
     print("\nXGBoosted Trees CV Results:")
-    print(f"\n{sklearn_results['cv_results']['xgbr']}")
+    print(f"\n{sklearn_results['cv_results']['xgbc']}")
 
     # Use training data for LightGBM
     lgb_df = data_dict['lightgbm_ready']['train']
@@ -2025,6 +2078,31 @@ def shallowMachineLearningPipeline(df, test_df, ordinal_columns, categorical_col
 
             # Save the model
             joblib.dump(pipeline, f"{model_path}.joblib")
+            print(f"Saved model {model_name} to {model_path}.joblib")
+
+
+            # Original code that still needs to be fixed below
+            # Originally, I wanted to create their native files so the XGBR file could be
+            # used across different applications, but we're saving the fitted_encoders in a joblib python native file
+            # so that entire section needs to be redone anyways, for cross-application use
+            # named_steps is the incorrect pipeline call though.
+            # DONT USE BELOW, DOES NOT WORK
+
+
+            # print(f'{model_name}')
+            # model_path = os.path.join(output_dir, f'{model_name}_pipeline')
+            #
+            # if 'cat' == model_name.lower():
+            #     model = pipeline.named_steps[f'{model_name}']
+            #     model.save_model(f"{model_path}.cbm")
+            # elif 'xgbc' == model_name.lower():
+            #     model = pipeline.named_steps[f'{model_name}']
+            #     model.save_model(f"{model_path}.model")
+            # elif 'lgbm' == model_name.lower():
+            #     model = pipeline.named_steps[f'{model_name}']
+            #     model.booster_.save_model(f"{model_path}.txt")
+            # else:
+            #     joblib.dump(pipeline, f"{model_path}.joblib")
 
 
     # Make predictions using appropriate preprocessed test data
